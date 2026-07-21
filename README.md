@@ -123,3 +123,4 @@ Good first issues:
 ## License
 
 MIT — see [LICENSE](LICENSE).
+# SentineAI
