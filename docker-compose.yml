@@ -1,0 +1,125 @@
+version: "3.9"
+
+services:
+  # ---------------------------------------------------------------------
+  # Data stores
+  # ---------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: sentinelai-postgres
+    environment:
+      POSTGRES_USER: sentinelai
+      POSTGRES_PASSWORD: sentinelai
+      POSTGRES_DB: sentinelai
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinelai"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    # redis-stack-server (not plain redis) — required for RedisVL's
+    # SemanticCache vector index (RediSearch module). See docs/CACHING.md.
+    image: redis/redis-stack-server:7.4.0-v3
+    container_name: sentinelai-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  chromadb:
+    image: chromadb/chroma:0.5.20
+    container_name: sentinelai-chromadb
+    ports:
+      - "8001:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: sentinelai-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"  # management UI
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  # ---------------------------------------------------------------------
+  # Application
+  # ---------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sentinelai-backend
+    env_file: .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      chromadb:
+        condition: service_started
+    volumes:
+      - ./backend/app:/app/app  # live-reload friendly for local dev
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    container_name: sentinelai-worker
+    env_file: .env
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      chromadb:
+        condition: service_started
+    deploy:
+      replicas: 2  # scale horizontally for concurrent bulk PDF ingestion
+
+  # ---------------------------------------------------------------------
+  # Observability
+  # ---------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: sentinelai-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: sentinelai-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+
+volumes:
+  postgres_data:
+  redis_data:
+  chroma_data:
+  grafana_data:
